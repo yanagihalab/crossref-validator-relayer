@@ -1,0 +1,312 @@
+# Crossref 5チェーン Docker 実験
+
+このディレクトリでは、5本の独立した `crossrefd` チェーン、1つの Hermes 初期化 container、1つ以上の Hermes relayer worker を起動する。
+初期化 container は次の組み合わせで `crossref` IBC channel の full mesh を開く。
+
+- `chain-a <-> chain-b`
+- `chain-a <-> chain-c`
+- `chain-a <-> chain-d`
+- `chain-a <-> chain-e`
+- `chain-b <-> chain-c`
+- `chain-b <-> chain-d`
+- `chain-b <-> chain-e`
+- `chain-c <-> chain-d`
+- `chain-c <-> chain-e`
+- `chain-d <-> chain-e`
+
+結果として、10本の双方向 IBC channel ペアと、20方向の cross-reference 経路ができる。
+
+## 前提条件
+
+- コマンドは `docker/` の中ではなく、リポジトリ root から実行する。
+- Docker 起動前に Linux ARM64 版 binary を build する。
+- Docker Desktop または Docker Engine を起動しておく。
+- macOS で Docker が project directory を読めない場合は、Docker file sharing で許可された場所に repository を置くか、親 folder への access を許可する。
+
+## 実験の流れ
+
+この実験は大まかに次を行う。
+
+1. 5本の独立した single-validator chain を起動する。
+2. 1つの Hermes 初期化 container を起動する。
+3. `crossref/crossref` IBC channel の full mesh を作成する。
+4. 1つ以上の Hermes relayer worker container を起動する。
+5. すべての chain に全 domain を登録する。
+6. 各 directed domain pair を local IBC channel に bind する。
+7. 各 source chain で checkpoint を1つ登録する。
+8. source-chain checkpoint proof を ICS23 proof として export する。
+9. destination light client を proof height まで更新する。
+10. 各 checkpoint を他の4チェーンへ broadcast する。
+11. destination chain を query し、受信済み cross-reference を確認する。
+
+## 経路の通し番号
+
+IBC の channel ID はチェーンごとのローカルIDである。そのため、複数のチェーンがそれぞれ `channel-0` を持つ。
+ログや visualizer で追いやすくするため、この実験では20方向すべての経路に `route-00` から `route-19` までの通し番号を割り当てている。
+
+| Route | 方向 | 実ローカル endpoint | 実 counterparty endpoint |
+| --- | --- | --- | --- |
+| `route-00` | `chain-a -> chain-b` | `chain-a/channel-0` | `chain-b/channel-0` |
+| `route-01` | `chain-b -> chain-a` | `chain-b/channel-0` | `chain-a/channel-0` |
+| `route-02` | `chain-a -> chain-c` | `chain-a/channel-1` | `chain-c/channel-0` |
+| `route-03` | `chain-c -> chain-a` | `chain-c/channel-0` | `chain-a/channel-1` |
+| `route-04` | `chain-a -> chain-d` | `chain-a/channel-2` | `chain-d/channel-0` |
+| `route-05` | `chain-d -> chain-a` | `chain-d/channel-0` | `chain-a/channel-2` |
+| `route-06` | `chain-a -> chain-e` | `chain-a/channel-3` | `chain-e/channel-0` |
+| `route-07` | `chain-e -> chain-a` | `chain-e/channel-0` | `chain-a/channel-3` |
+| `route-08` | `chain-b -> chain-c` | `chain-b/channel-1` | `chain-c/channel-1` |
+| `route-09` | `chain-c -> chain-b` | `chain-c/channel-1` | `chain-b/channel-1` |
+| `route-10` | `chain-b -> chain-d` | `chain-b/channel-2` | `chain-d/channel-1` |
+| `route-11` | `chain-d -> chain-b` | `chain-d/channel-1` | `chain-b/channel-2` |
+| `route-12` | `chain-b -> chain-e` | `chain-b/channel-3` | `chain-e/channel-1` |
+| `route-13` | `chain-e -> chain-b` | `chain-e/channel-1` | `chain-b/channel-3` |
+| `route-14` | `chain-c -> chain-d` | `chain-c/channel-2` | `chain-d/channel-2` |
+| `route-15` | `chain-d -> chain-c` | `chain-d/channel-2` | `chain-c/channel-2` |
+| `route-16` | `chain-c -> chain-e` | `chain-c/channel-3` | `chain-e/channel-2` |
+| `route-17` | `chain-e -> chain-c` | `chain-e/channel-2` | `chain-c/channel-3` |
+| `route-18` | `chain-d -> chain-e` | `chain-d/channel-3` | `chain-e/channel-3` |
+| `route-19` | `chain-e -> chain-d` | `chain-e/channel-3` | `chain-d/channel-3` |
+
+## ビルド
+
+Docker image 内で使う Linux ARM64 版の daemon をビルドする。
+
+```bash
+make security-deps
+mkdir -p build
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o ./build/crossrefd-linux-arm64 ./cmd/crossrefdd
+go build -mod=readonly -o build/crossrefdd ./cmd/crossrefdd
+node docker/scripts/prepare-local-secrets.mjs
+```
+
+Intel/AMD Linux Docker host で動かす場合は `linux/amd64` で build し、Dockerfile または出力 path を合わせて変更する。
+
+## 起動
+
+5本のチェーンと1つの relayer worker を起動する。
+
+```bash
+docker compose -f docker/docker-compose.yml up -d --build
+```
+
+`relayer-init` container は init mode で `setup-ibc.sh` を実行する。この container は全チェーンの起動を待ち、Hermes key を読み込み、`crossref` channel の full mesh を作成して終了する。`relayer` service は初期化完了後に Hermes を worker mode で起動する。
+
+relayer worker を増やして起動する場合は、`relayer` service を scale する。
+
+```bash
+docker compose -f docker/docker-compose.yml up -d --build --scale relayer=3
+```
+
+起動後に worker 数を増減できる。
+
+```bash
+docker compose -f docker/docker-compose.yml up -d --scale relayer=5
+docker compose -f docker/docker-compose.yml up -d --scale relayer=1
+```
+
+すべての worker container はローカル実験用の同一 mnemonic を使う。これはローカルの fan-out と failover test には便利であるが、本番運用では relayer ごとに独立した funded key と運用 policy を用意すべきである。
+
+container の状態を確認する。
+
+```bash
+docker compose -f docker/docker-compose.yml ps
+```
+
+relayer log を確認する。
+
+```bash
+docker compose -f docker/docker-compose.yml logs -f relayer
+```
+
+channel 初期化 log を確認する。
+
+```bash
+docker compose -f docker/docker-compose.yml logs relayer-init
+```
+
+## 実験の実行
+
+5チェーンの end-to-end 実験を実行する。
+
+```bash
+docker/scripts/run-crossref-experiment.sh
+```
+
+`run-crossref-experiment.sh` は `TOPOLOGY_FILE` を読み、domain、route、channel ID、client ID、proof collect、broadcast、verification loop を topology から動的に決定する。`TOPOLOGY_FILE` を省略した場合は `docker/generated/topology-${CHAIN_COUNT}c-${RELAYER_WORKER_COUNT}r.json` を使い、存在しなければ生成する。
+
+生成済み 3 チェーン / 2 relayer 実験を実行する:
+
+```bash
+node docker/scripts/generate-topology.mjs 3 2
+docker compose -f docker/generated/docker-compose-3c-2r.yml up -d --build
+COMPOSE_FILE=docker/generated/docker-compose-3c-2r.yml \
+TOPOLOGY_FILE=docker/generated/topology-3c-2r.json \
+docker/scripts/run-crossref-experiment.sh
+```
+
+Docker に接続せず topology parsing だけを確認する:
+
+```bash
+DRY_RUN=1 TOPOLOGY_FILE=docker/generated/topology-3c-2r.json docker/scripts/run-crossref-experiment.sh
+```
+
+## Relayer 分配、再分配、failover
+
+生成された topology は、各 directed route を relayer worker に割り当てる。各 worker には、担当 route の channel を許可する Hermes `packet_filter` 付き config が生成される。
+
+route assignment と worker Hermes config の整合を確認する:
+
+```bash
+node docker/scripts/generate-topology.mjs 5 3
+node docker/scripts/verify-relayer-assignment.mjs \
+  docker/generated/topology-5c-3r.json \
+  'docker/generated/hermes-5c-3r-worker-{worker}.toml'
+```
+
+`RELAYER_COUNT` が directed route 数より大きい場合、余った worker は `idleWorkers` として報告され、正常な状態として扱われる。すべての active worker が少なくとも 1 route を担当する必要がある場合は、`STRICT_NONEMPTY_WORKERS=1` を指定する。
+
+需要に基づいて route を再分配する:
+
+```bash
+cat >/tmp/crossref-demand.json <<'JSON'
+{
+  "routes": {
+    "route-00": 10,
+    "route-01": 8
+  },
+  "domains": {
+    "chain-e": 3
+  }
+}
+JSON
+
+DEMAND_FILE=/tmp/crossref-demand.json \
+RELAYER_COUNT=3 \
+TOPOLOGY_FILE=docker/generated/topology-5c-3r.json \
+node docker/scripts/rebalance-relayers.mjs
+```
+
+rebalance command は新しい topology、worker 別 Hermes config、Compose override file を生成する。新しい config を適用するには、base Compose file と生成済み override を同時に指定して worker を再作成する。
+
+```bash
+docker compose \
+  -f docker/generated/docker-compose-5c-3r.yml \
+  -f docker/generated/docker-compose-5c-3r-rebalance.override.yml \
+  up -d --force-recreate relayer-1 relayer-2 relayer-3
+```
+
+worker 1 の failover dry-run を実行する:
+
+```bash
+FAILED_WORKER=1 CHAIN_COUNT=5 RELAYER_COUNT=3 docker/scripts/run-relayer-failover-test.sh
+```
+
+Docker を使った failover flow を実行する:
+
+```bash
+RUN_DOCKER_FAILOVER=1 FAILED_WORKER=1 CHAIN_COUNT=5 RELAYER_COUNT=3 docker/scripts/run-relayer-failover-test.sh
+```
+
+別の実験が default host port を使用している場合は、container 内の chain address は変えずに、生成される host port だけを offset できる。
+
+```bash
+HOST_PORT_OFFSET=1000 RUN_DOCKER_FAILOVER=1 \
+  FAILED_WORKER=1 CHAIN_COUNT=3 RELAYER_COUNT=2 \
+  docker/scripts/run-relayer-failover-test.sh
+```
+
+worker 停止と rebalance 後は、failover topology に対して次の checkpoint height を実行する。
+
+```bash
+COMPOSE_FILE=docker/generated/docker-compose-5c-3r.yml \
+TOPOLOGY_FILE=docker/generated/topology-5c-3r-failover-1.json \
+CHECKPOINT_HEIGHT=2 \
+docker/scripts/run-crossref-experiment.sh
+```
+
+failover helper は active worker を `--no-deps` 付きで再作成するため、完了済みの `relayer-init` channel setup は再実行されない。
+
+複数の relayer worker が起動している場合、実験スクリプトは手動の Hermes `update client` command を worker index `1` に送る。別の worker を使う場合は次のように指定する。
+
+```bash
+RELAYER_INDEX=2 docker/scripts/run-crossref-experiment.sh
+```
+
+このスクリプトは次を確認する。
+
+1. `route-00` から `route-19` までの通し番号表を表示する。
+2. 20方向すべての `crossref` channel endpoint が存在するまで待つ。
+3. 5つの domain を全5チェーンに登録する。
+4. すべての directed domain/channel route を bind する。
+5. 各 source chain に checkpoint を1つ登録する。
+6. 各 checkpoint に source domain の Ed25519 hysteresis key で署名する。
+7. `query crossref checkpoint-proof` で各 source checkpoint の ICS23 store proof を取得する。
+8. destination 側 light client を source proof height まで更新する。
+9. 各 source checkpoint packet を他の4チェーンへ broadcast する。
+10. 各 destination chain が、他の4つの source chain の cross-reference を保存していることを確認する。
+
+成功時は最後に次のメッセージが表示される。
+
+```text
+Five-chain cross-reference experiment passed.
+```
+
+## Hysteresis Signature 検証
+
+Docker 実験では、全 chain 上の全 domain に Ed25519 の `hysteresis_public_key` を登録する。各 checkpoint は source domain の deterministic test key で署名され、`SubmitCheckpoint` と IBC packet 受信の両方で `hysteresis_signature` が checkpoint hash に対する署名として検証される。module 自体は移行互換性のため公開鍵未登録の domain も受け入れるが、この 5 チェーン実験では署名必須の経路を通す。
+
+## Query 例
+
+chain A の checkpoint を確認する。
+
+```bash
+docker compose -f docker/docker-compose.yml exec -T chain-a \
+  crossrefd --home /var/crossref query crossref checkpoint chain-a 1 --output json
+```
+
+chain B に保存された chain A の cross-reference を確認する。
+
+```bash
+docker compose -f docker/docker-compose.yml exec -T chain-b \
+  crossrefd --home /var/crossref query crossref cross-reference chain-b chain-a 1 --output json
+```
+
+chain A から ICS23 checkpoint proof を export する。
+
+```bash
+docker compose -f docker/docker-compose.yml exec -T chain-a \
+  crossrefd --home /var/crossref query crossref checkpoint-proof chain-a 1 --output json
+```
+
+## エンドポイント
+
+| Chain | RPC | gRPC | REST |
+| --- | --- | --- | --- |
+| A | `http://localhost:26657` | `localhost:9090` | `http://localhost:1317` |
+| B | `http://localhost:26667` | `localhost:9091` | `http://localhost:1318` |
+| C | `http://localhost:26677` | `localhost:9092` | `http://localhost:1319` |
+| D | `http://localhost:26687` | `localhost:9093` | `http://localhost:1320` |
+| E | `http://localhost:26697` | `localhost:9094` | `http://localhost:1321` |
+
+## リセット
+
+コンテナを停止し、全チェーンの状態を削除する。
+
+```bash
+docker compose -f docker/docker-compose.yml down -v
+```
+
+## 注意点
+
+`run-crossref-experiment.sh` は、`setup-ibc.sh` の channel 作成順序によって生成される channel ID と client ID を前提としている。
+full mesh の channel 作成順序を変更した場合は、実験スクリプト内の `channel_id()` と `client_for_source()` も更新する。
+
+実験スクリプトは、成功後も Docker network を起動したままにする。
+これにより、追加の query 実行や visualizer による確認を続けられる。
+
+## トラブルシュート
+
+- `operation not permitted`: macOS の file permission または Docker file sharing が access を妨げている可能性がある。repository を Docker が共有できる folder に置き、現在の user が読める状態にする。
+- `docker: unknown command: docker compose`: Docker Compose v2 を install するか、Compose v2 同梱の Docker Desktop を使う。
+- channel が作成されない: `docker compose -f docker/docker-compose.yml logs -f relayer` で relayer log を確認する。
+- channel 作成順序を変えた後に experiment が失敗する: `docker/scripts/run-crossref-experiment.sh` の `channel_id()` と `client_for_source()` を更新する。

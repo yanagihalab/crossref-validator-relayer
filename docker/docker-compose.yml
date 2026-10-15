@@ -1,0 +1,188 @@
+services:
+  chain-a:
+    build:
+      context: ..
+      dockerfile: docker/crossrefd.Dockerfile
+    container_name: crossref-chain-a
+    environment:
+      CHAIN_ID: crossref-a
+      MONIKER: chain-a
+      HOME_DIR: /var/crossref
+      VALIDATOR_MNEMONIC_FILE: /run/secrets/validator.mnemonic
+      RELAYER_MNEMONIC_FILE: /run/secrets/relayer.mnemonic
+      CROSSREF_MAX_CHECKPOINT_PROOF_LAG: "${CROSSREF_MAX_CHECKPOINT_PROOF_LAG:-10000}"
+      CROSSREF_REQUIRE_CONSENSUS_PROOF: "${CROSSREF_REQUIRE_CONSENSUS_PROOF:-false}"
+    command: ["/opt/crossref/scripts/start-chain.sh"]
+    ports:
+      - "26657:26657"
+      - "9090:9090"
+      - "1317:1317"
+    volumes:
+      - chain-a-data:/var/crossref
+      - ./generated/local-secrets/validator.mnemonic:/run/secrets/validator.mnemonic:ro
+      - ./generated/local-secrets/relayer.mnemonic:/run/secrets/relayer.mnemonic:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:26657/status | grep -Eq '\"latest_block_height\":\"[1-9][0-9]*\"'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  chain-b:
+    build:
+      context: ..
+      dockerfile: docker/crossrefd.Dockerfile
+    container_name: crossref-chain-b
+    environment:
+      CHAIN_ID: crossref-b
+      MONIKER: chain-b
+      HOME_DIR: /var/crossref
+      VALIDATOR_MNEMONIC_FILE: /run/secrets/validator.mnemonic
+      RELAYER_MNEMONIC_FILE: /run/secrets/relayer.mnemonic
+      CROSSREF_MAX_CHECKPOINT_PROOF_LAG: "${CROSSREF_MAX_CHECKPOINT_PROOF_LAG:-10000}"
+      CROSSREF_REQUIRE_CONSENSUS_PROOF: "${CROSSREF_REQUIRE_CONSENSUS_PROOF:-false}"
+    command: ["/opt/crossref/scripts/start-chain.sh"]
+    ports:
+      - "26667:26657"
+      - "9091:9090"
+      - "1318:1317"
+    volumes:
+      - chain-b-data:/var/crossref
+      - ./generated/local-secrets/validator.mnemonic:/run/secrets/validator.mnemonic:ro
+      - ./generated/local-secrets/relayer.mnemonic:/run/secrets/relayer.mnemonic:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:26657/status | grep -Eq '\"latest_block_height\":\"[1-9][0-9]*\"'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  chain-c:
+    build:
+      context: ..
+      dockerfile: docker/crossrefd.Dockerfile
+    container_name: crossref-chain-c
+    environment:
+      CHAIN_ID: crossref-c
+      MONIKER: chain-c
+      HOME_DIR: /var/crossref
+      VALIDATOR_MNEMONIC_FILE: /run/secrets/validator.mnemonic
+      RELAYER_MNEMONIC_FILE: /run/secrets/relayer.mnemonic
+      CROSSREF_MAX_CHECKPOINT_PROOF_LAG: "${CROSSREF_MAX_CHECKPOINT_PROOF_LAG:-10000}"
+      CROSSREF_REQUIRE_CONSENSUS_PROOF: "${CROSSREF_REQUIRE_CONSENSUS_PROOF:-false}"
+    command: ["/opt/crossref/scripts/start-chain.sh"]
+    ports:
+      - "26677:26657"
+      - "9092:9090"
+      - "1319:1317"
+    volumes:
+      - chain-c-data:/var/crossref
+      - ./generated/local-secrets/validator.mnemonic:/run/secrets/validator.mnemonic:ro
+      - ./generated/local-secrets/relayer.mnemonic:/run/secrets/relayer.mnemonic:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:26657/status | grep -Eq '\"latest_block_height\":\"[1-9][0-9]*\"'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  chain-d:
+    build:
+      context: ..
+      dockerfile: docker/crossrefd.Dockerfile
+    container_name: crossref-chain-d
+    environment:
+      CHAIN_ID: crossref-d
+      MONIKER: chain-d
+      HOME_DIR: /var/crossref
+      VALIDATOR_MNEMONIC_FILE: /run/secrets/validator.mnemonic
+      RELAYER_MNEMONIC_FILE: /run/secrets/relayer.mnemonic
+      CROSSREF_MAX_CHECKPOINT_PROOF_LAG: "${CROSSREF_MAX_CHECKPOINT_PROOF_LAG:-10000}"
+      CROSSREF_REQUIRE_CONSENSUS_PROOF: "${CROSSREF_REQUIRE_CONSENSUS_PROOF:-false}"
+    command: ["/opt/crossref/scripts/start-chain.sh"]
+    ports:
+      - "26687:26657"
+      - "9093:9090"
+      - "1320:1317"
+    volumes:
+      - chain-d-data:/var/crossref
+      - ./generated/local-secrets/validator.mnemonic:/run/secrets/validator.mnemonic:ro
+      - ./generated/local-secrets/relayer.mnemonic:/run/secrets/relayer.mnemonic:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:26657/status | grep -Eq '\"latest_block_height\":\"[1-9][0-9]*\"'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  chain-e:
+    build:
+      context: ..
+      dockerfile: docker/crossrefd.Dockerfile
+    container_name: crossref-chain-e
+    environment:
+      CHAIN_ID: crossref-e
+      MONIKER: chain-e
+      HOME_DIR: /var/crossref
+      VALIDATOR_MNEMONIC_FILE: /run/secrets/validator.mnemonic
+      RELAYER_MNEMONIC_FILE: /run/secrets/relayer.mnemonic
+      CROSSREF_MAX_CHECKPOINT_PROOF_LAG: "${CROSSREF_MAX_CHECKPOINT_PROOF_LAG:-10000}"
+      CROSSREF_REQUIRE_CONSENSUS_PROOF: "${CROSSREF_REQUIRE_CONSENSUS_PROOF:-false}"
+    command: ["/opt/crossref/scripts/start-chain.sh"]
+    ports:
+      - "26697:26657"
+      - "9094:9090"
+      - "1321:1317"
+    volumes:
+      - chain-e-data:/var/crossref
+      - ./generated/local-secrets/validator.mnemonic:/run/secrets/validator.mnemonic:ro
+      - ./generated/local-secrets/relayer.mnemonic:/run/secrets/relayer.mnemonic:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:26657/status | grep -Eq '\"latest_block_height\":\"[1-9][0-9]*\"'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  relayer-init:
+    image: ghcr.io/informalsystems/hermes:1.10.5
+    container_name: crossref-hermes-init
+    user: root
+    depends_on:
+      chain-a:
+        condition: service_healthy
+      chain-b:
+        condition: service_healthy
+      chain-c:
+        condition: service_healthy
+      chain-d:
+        condition: service_healthy
+      chain-e:
+        condition: service_healthy
+    environment:
+      RELAYER_MNEMONIC_FILE: /run/secrets/relayer.mnemonic
+      HERMES_CONFIG: /root/.hermes/config.toml
+      RELAYER_MODE: init
+    entrypoint: ["/bin/sh", "/opt/crossref/scripts/setup-ibc.sh"]
+    volumes:
+      - ./hermes/config.toml:/root/.hermes/config.toml:ro
+      - ./scripts:/opt/crossref/scripts:ro
+      - ./generated/local-secrets/relayer.mnemonic:/run/secrets/relayer.mnemonic:ro
+
+  relayer:
+    image: ghcr.io/informalsystems/hermes:1.10.5
+    user: root
+    depends_on:
+      relayer-init:
+        condition: service_completed_successfully
+    environment:
+      RELAYER_MNEMONIC_FILE: /run/secrets/relayer.mnemonic
+      HERMES_CONFIG: /root/.hermes/config.toml
+      RELAYER_MODE: start
+    entrypoint: ["/bin/sh", "/opt/crossref/scripts/setup-ibc.sh"]
+    volumes:
+      - ./hermes/config.toml:/root/.hermes/config.toml:ro
+      - ./scripts:/opt/crossref/scripts:ro
+      - ./generated/local-secrets/relayer.mnemonic:/run/secrets/relayer.mnemonic:ro
+
+volumes:
+  chain-a-data:
+  chain-b-data:
+  chain-c-data:
+  chain-d-data:
+  chain-e-data:

@@ -1,0 +1,79 @@
+package keeper_test
+
+import (
+	"context"
+	"testing"
+
+	"cosmossdk.io/core/address"
+	addresscodec "github.com/cosmos/cosmos-sdk/codec/address"
+	"github.com/cosmos/cosmos-sdk/runtime"
+	storetypes "github.com/cosmos/cosmos-sdk/store/v2/types"
+	"github.com/cosmos/cosmos-sdk/testutil"
+	sdk "github.com/cosmos/cosmos-sdk/types"
+	moduletestutil "github.com/cosmos/cosmos-sdk/types/module/testutil"
+	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
+	govtypes "github.com/cosmos/cosmos-sdk/x/gov/types"
+	upgradetypes "github.com/cosmos/cosmos-sdk/x/upgrade/types"
+	clienttypes "github.com/cosmos/ibc-go/v11/modules/core/02-client/types"
+	ibckeeper "github.com/cosmos/ibc-go/v11/modules/core/keeper"
+
+	"github.com/crossref/crossrefd/x/crossref/keeper"
+	module "github.com/crossref/crossrefd/x/crossref/module"
+	"github.com/crossref/crossrefd/x/crossref/types"
+)
+
+type fixture struct {
+	ctx          context.Context
+	keeper       keeper.Keeper
+	addressCodec address.Codec
+}
+
+func initFixture(t *testing.T) *fixture {
+	t.Helper()
+
+	encCfg := moduletestutil.MakeTestEncodingConfig(module.AppModule{})
+	addressCodec := addresscodec.NewBech32Codec(sdk.GetConfig().GetBech32AccountAddrPrefix())
+	storeKey := storetypes.NewKVStoreKey(types.StoreKey)
+
+	storeService := runtime.NewKVStoreService(storeKey)
+	ctx := testutil.DefaultContextWithDB(t, storeKey, storetypes.NewTransientStoreKey("transient_test")).Ctx
+
+	authority := authtypes.NewModuleAddress(govtypes.ModuleName)
+	mockUpgradeKeeper := newMockUpgradeKeeper()
+
+	k := keeper.NewKeeper(
+		storeService,
+		encCfg.Codec,
+		addressCodec,
+		authority,
+		func() *ibckeeper.Keeper {
+			return ibckeeper.NewKeeper(encCfg.Codec, storeService, mockUpgradeKeeper, authority.String())
+		},
+		nil,
+	)
+
+	// Initialize params
+	if err := k.Params.Set(ctx, types.DefaultParams()); err != nil {
+		t.Fatalf("failed to set params: %v", err)
+	}
+
+	return &fixture{
+		ctx:          ctx,
+		keeper:       k,
+		addressCodec: addressCodec,
+	}
+}
+
+type mockUpgradeKeeper struct {
+	clienttypes.UpgradeKeeper
+
+	initialized bool
+}
+
+func (m mockUpgradeKeeper) GetUpgradePlan(ctx context.Context) (upgradetypes.Plan, error) {
+	return upgradetypes.Plan{}, nil
+}
+
+func newMockUpgradeKeeper() *mockUpgradeKeeper {
+	return &mockUpgradeKeeper{initialized: true}
+}

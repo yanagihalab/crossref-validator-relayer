@@ -1,0 +1,300 @@
+package keeper
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"sort"
+
+	"cosmossdk.io/collections"
+	errorsmod "cosmossdk.io/errors"
+	sdk "github.com/cosmos/cosmos-sdk/types"
+	"github.com/crossref/crossrefd/x/crossref/types"
+)
+
+func domainChannelKey(localDomainID, remoteDomainID, portID, channelID string) string {
+	return fmt.Sprintf("%s/%s/%s/%s", localDomainID, remoteDomainID, portID, channelID)
+}
+
+func channelDomainKey(portID, channelID string) string {
+	return fmt.Sprintf("%s/%s", portID, channelID)
+}
+
+func checkpointKey(domainID string, height uint64) string {
+	return fmt.Sprintf("%s/%020d", domainID, height)
+}
+
+func crossReferenceKey(localDomainID, remoteDomainID string, remoteHeight uint64) string {
+	return fmt.Sprintf("%s/%s/%020d", localDomainID, remoteDomainID, remoteHeight)
+}
+
+func outgoingPacketKey(portID, channelID string, sequence uint64) string {
+	return fmt.Sprintf("%s/%s/%020d", portID, channelID, sequence)
+}
+
+func crossReferenceAckKey(portID, channelID string, sequence uint64) string {
+	return fmt.Sprintf("%s/%s/%020d", portID, channelID, sequence)
+}
+
+func accountabilityEventKey(event types.AccountabilityEvent) string {
+	return fmt.Sprintf("%s/%s/%020d/%s", event.DomainId, event.EventType, event.Height, event.EventId)
+}
+
+func lightClientUpdateKey(update types.LightClientUpdate) string {
+	return fmt.Sprintf("%s/%020d/%s", update.DomainId, update.TargetHeight, fmt.Sprintf("%X", update.TargetBlockHash))
+}
+
+func (k Keeper) SetDomain(ctx context.Context, domain types.DomainInfo) error {
+	return k.Domains.Set(ctx, domain.DomainId, domain)
+}
+
+func (k Keeper) GetDomain(ctx context.Context, domainID string) (types.DomainInfo, bool, error) {
+	domain, err := k.Domains.Get(ctx, domainID)
+	if err != nil {
+		if errorsmod.IsOf(err, collections.ErrNotFound) {
+			return types.DomainInfo{}, false, nil
+		}
+		return types.DomainInfo{}, false, err
+	}
+	return domain, true, nil
+}
+
+func (k Keeper) SetDomainChannel(ctx context.Context, binding types.DomainChannel) error {
+	if err := k.DomainChannels.Set(ctx, domainChannelKey(binding.LocalDomainId, binding.RemoteDomainId, binding.PortId, binding.ChannelId), binding); err != nil {
+		return err
+	}
+	return k.ChannelDomains.Set(ctx, channelDomainKey(binding.PortId, binding.ChannelId), binding)
+}
+
+func (k Keeper) GetDomainChannelByChannel(ctx context.Context, portID, channelID string) (types.DomainChannel, bool, error) {
+	binding, err := k.ChannelDomains.Get(ctx, channelDomainKey(portID, channelID))
+	if err != nil {
+		if errorsmod.IsOf(err, collections.ErrNotFound) {
+			return types.DomainChannel{}, false, nil
+		}
+		return types.DomainChannel{}, false, err
+	}
+	return binding, true, nil
+}
+
+func (k Keeper) ListDomainChannelsByLocalDomain(ctx context.Context, localDomainID, portID string) ([]types.DomainChannel, error) {
+	var bindings []types.DomainChannel
+	err := k.DomainChannels.Walk(ctx, nil, func(_ string, binding types.DomainChannel) (bool, error) {
+		if binding.LocalDomainId != localDomainID {
+			return false, nil
+		}
+		if portID != "" && binding.PortId != portID {
+			return false, nil
+		}
+		bindings = append(bindings, binding)
+		return false, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	sort.Slice(bindings, func(i, j int) bool {
+		if bindings[i].RemoteDomainId != bindings[j].RemoteDomainId {
+			return bindings[i].RemoteDomainId < bindings[j].RemoteDomainId
+		}
+		if bindings[i].PortId != bindings[j].PortId {
+			return bindings[i].PortId < bindings[j].PortId
+		}
+		return bindings[i].ChannelId < bindings[j].ChannelId
+	})
+
+	return bindings, nil
+}
+
+func (k Keeper) SetCheckpoint(ctx context.Context, checkpoint types.Checkpoint) error {
+	if err := types.NormalizeCheckpointHashes(&checkpoint); err != nil {
+		return err
+	}
+	if err := k.Checkpoints.Set(ctx, checkpointKey(checkpoint.DomainId, checkpoint.Height), checkpoint); err != nil {
+		return err
+	}
+	return k.LatestCheckpoints.Set(ctx, checkpoint.DomainId, checkpoint.Height)
+}
+
+func (k Keeper) GetCheckpoint(ctx context.Context, domainID string, height uint64) (types.Checkpoint, bool, error) {
+	checkpoint, err := k.Checkpoints.Get(ctx, checkpointKey(domainID, height))
+	if err != nil {
+		if errorsmod.IsOf(err, collections.ErrNotFound) {
+			return types.Checkpoint{}, false, nil
+		}
+		return types.Checkpoint{}, false, err
+	}
+	return checkpoint, true, nil
+}
+
+func (k Keeper) GetLatestCheckpoint(ctx context.Context, domainID string) (types.Checkpoint, bool, error) {
+	height, err := k.LatestCheckpoints.Get(ctx, domainID)
+	if err != nil {
+		if errorsmod.IsOf(err, collections.ErrNotFound) {
+			return types.Checkpoint{}, false, nil
+		}
+		return types.Checkpoint{}, false, err
+	}
+	return k.GetCheckpoint(ctx, domainID, height)
+}
+
+func (k Keeper) ValidateCheckpoint(ctx context.Context, checkpoint types.Checkpoint) error {
+	if err := types.NormalizeCheckpointHashes(&checkpoint); err != nil {
+		return errorsmod.Wrapf(err, "domain=%s height=%d", checkpoint.DomainId, checkpoint.Height)
+	}
+
+	if existing, found, err := k.GetCheckpoint(ctx, checkpoint.DomainId, checkpoint.Height); err != nil {
+		return err
+	} else if found {
+		if !bytes.Equal(existing.CheckpointHash, checkpoint.CheckpointHash) {
+			return errorsmod.Wrapf(types.ErrCheckpointConflict, "domain=%s height=%d", checkpoint.DomainId, checkpoint.Height)
+		}
+		if !bytes.Equal(existing.StateHash, checkpoint.StateHash) {
+			return errorsmod.Wrapf(types.ErrCheckpointConflict, "domain=%s height=%d state hash differs", checkpoint.DomainId, checkpoint.Height)
+		}
+		return nil
+	}
+
+	if latest, found, err := k.GetLatestCheckpoint(ctx, checkpoint.DomainId); err != nil {
+		return err
+	} else if found {
+		if checkpoint.Height <= latest.Height {
+			return errorsmod.Wrapf(types.ErrCheckpointConflict, "domain=%s height=%d latest=%d", checkpoint.DomainId, checkpoint.Height, latest.Height)
+		}
+		if !bytes.Equal(checkpoint.PreviousCheckpointHash, latest.CheckpointHash) {
+			return errorsmod.Wrapf(types.ErrPreviousCheckpointBroken, "domain=%s height=%d latest=%d", checkpoint.DomainId, checkpoint.Height, latest.Height)
+		}
+		if !bytes.Equal(checkpoint.PreviousStateHash, latest.StateHash) {
+			return errorsmod.Wrapf(types.ErrPreviousStateBroken, "domain=%s height=%d latest=%d", checkpoint.DomainId, checkpoint.Height, latest.Height)
+		}
+	}
+
+	return nil
+}
+
+func (k Keeper) SetCrossReference(ctx context.Context, reference types.CrossReference) error {
+	return k.CrossReferences.Set(ctx, crossReferenceKey(reference.LocalDomainId, reference.RemoteDomainId, reference.RemoteHeight), reference)
+}
+
+func (k Keeper) GetCrossReference(ctx context.Context, localDomainID, remoteDomainID string, remoteHeight uint64) (types.CrossReference, bool, error) {
+	reference, err := k.CrossReferences.Get(ctx, crossReferenceKey(localDomainID, remoteDomainID, remoteHeight))
+	if err != nil {
+		if errorsmod.IsOf(err, collections.ErrNotFound) {
+			return types.CrossReference{}, false, nil
+		}
+		return types.CrossReference{}, false, err
+	}
+	return reference, true, nil
+}
+
+func (k Keeper) SetOutgoingPacket(ctx context.Context, portID, channelID string, sequence uint64, checkpointHash []byte) error {
+	return k.OutgoingPackets.Set(ctx, outgoingPacketKey(portID, channelID, sequence), checkpointHash)
+}
+
+func (k Keeper) SetCrossReferenceAck(ctx context.Context, ack types.CrossReferenceAck) error {
+	return k.CrossReferenceAcks.Set(ctx, crossReferenceAckKey(ack.PortId, ack.ChannelId, ack.PacketSequence), ack)
+}
+
+func (k Keeper) GetCrossReferenceAck(ctx context.Context, portID, channelID string, sequence uint64) (types.CrossReferenceAck, bool, error) {
+	ack, err := k.CrossReferenceAcks.Get(ctx, crossReferenceAckKey(portID, channelID, sequence))
+	if err != nil {
+		if errorsmod.IsOf(err, collections.ErrNotFound) {
+			return types.CrossReferenceAck{}, false, nil
+		}
+		return types.CrossReferenceAck{}, false, err
+	}
+	return ack, true, nil
+}
+
+func (k Keeper) RecordAccountabilityEvent(ctx context.Context, event types.AccountabilityEvent) error {
+	if event.EventId == "" {
+		event.EventId = fmt.Sprintf("%s/%s/%020d/%s", event.DomainId, event.EventType, event.Height, event.Actor)
+	}
+	if event.DetectedTimeUnix == 0 {
+		if sdkCtx := sdk.UnwrapSDKContext(ctx); !sdkCtx.BlockTime().IsZero() {
+			event.DetectedTimeUnix = sdkCtx.BlockTime().Unix()
+		}
+	}
+	return k.AccountabilityEvents.Set(ctx, accountabilityEventKey(event), event)
+}
+
+func (k Keeper) GetAccountabilityEvent(ctx context.Context, eventID string) (types.AccountabilityEvent, bool, error) {
+	var foundEvent types.AccountabilityEvent
+	found := false
+	err := k.AccountabilityEvents.Walk(ctx, nil, func(_ string, event types.AccountabilityEvent) (bool, error) {
+		if event.EventId != eventID {
+			return false, nil
+		}
+		foundEvent = event
+		found = true
+		return true, nil
+	})
+	if err != nil {
+		return types.AccountabilityEvent{}, false, err
+	}
+	return foundEvent, found, nil
+}
+
+func (k Keeper) ListAccountabilityEvents(ctx context.Context, domainID string) ([]types.AccountabilityEvent, error) {
+	var events []types.AccountabilityEvent
+	err := k.AccountabilityEvents.Walk(ctx, nil, func(_ string, event types.AccountabilityEvent) (bool, error) {
+		if domainID != "" && event.DomainId != domainID {
+			return false, nil
+		}
+		events = append(events, event)
+		return false, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].DetectedTimeUnix != events[j].DetectedTimeUnix {
+			return events[i].DetectedTimeUnix < events[j].DetectedTimeUnix
+		}
+		return events[i].EventId < events[j].EventId
+	})
+	return events, nil
+}
+
+func (k Keeper) SetTrustedLightClientState(ctx context.Context, state types.TrustedLightClientState) error {
+	return k.TrustedLightClients.Set(ctx, state.DomainId, state)
+}
+
+func (k Keeper) GetTrustedLightClientState(ctx context.Context, domainID string) (types.TrustedLightClientState, bool, error) {
+	state, err := k.TrustedLightClients.Get(ctx, domainID)
+	if err != nil {
+		if errorsmod.IsOf(err, collections.ErrNotFound) {
+			return types.TrustedLightClientState{}, false, nil
+		}
+		return types.TrustedLightClientState{}, false, err
+	}
+	return state, true, nil
+}
+
+func (k Keeper) RecordLightClientUpdate(ctx context.Context, update types.LightClientUpdate) error {
+	return k.LightClientUpdates.Set(ctx, lightClientUpdateKey(update), update)
+}
+
+func (k Keeper) ListLightClientUpdates(ctx context.Context, domainID string) ([]types.LightClientUpdate, error) {
+	var updates []types.LightClientUpdate
+	err := k.LightClientUpdates.Walk(ctx, nil, func(_ string, update types.LightClientUpdate) (bool, error) {
+		if domainID != "" && update.DomainId != domainID {
+			return false, nil
+		}
+		updates = append(updates, update)
+		return false, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(updates, func(i, j int) bool {
+		if updates[i].DomainId != updates[j].DomainId {
+			return updates[i].DomainId < updates[j].DomainId
+		}
+		if updates[i].TargetHeight != updates[j].TargetHeight {
+			return updates[i].TargetHeight < updates[j].TargetHeight
+		}
+		return bytes.Compare(updates[i].TargetBlockHash, updates[j].TargetBlockHash) < 0
+	})
+	return updates, nil
+}
